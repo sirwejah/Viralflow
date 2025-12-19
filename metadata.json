@@ -1,0 +1,9 @@
+{
+  "name": "AutoCreator Studio",
+  "description": "An AI-powered short-form video creation platform for TikTok, Instagram Reels, and YouTube Shorts. Turn ideas into viral content with automated scripts, hooks, captions, and scheduling.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
