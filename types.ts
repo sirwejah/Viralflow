@@ -18,11 +18,16 @@ export type Niche =
   | 'Tech'
   | 'Lifestyle';
 
+export type SubscriptionPlan = 'Starter' | 'Pro' | 'Studio';
+
+export type ScriptArchetype = 'Storyteller' | 'Tutorial' | 'Myth-Buster' | 'Listicle' | 'POV';
+
 export interface UserProfile {
   name: string;
   platforms: Platform[];
   creatorType: CreatorType;
   niche: Niche[];
+  plan?: SubscriptionPlan;
 }
 
 export interface VideoIdea {
@@ -31,6 +36,7 @@ export interface VideoIdea {
   hook: string;
   viralityScore: number;
   script?: string;
+  archetype?: ScriptArchetype;
   status: 'idea' | 'scripted' | 'generating' | 'ready' | 'scheduled' | 'posted';
   scheduledAt?: string;
 }

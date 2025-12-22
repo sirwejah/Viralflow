@@ -1,15 +1,23 @@
 
 import { GoogleGenAI, Type, Modality } from "@google/genai";
+import { ScriptArchetype } from "./types";
 
-// Following the rule of creating a fresh instance right before the call
-// to ensure the latest API key is used, especially for models that might
-// require user-provided keys or when keys are updated via the UI.
-
-// Using search grounding for viral hooks - following rules for grounding
-export const generateHooksWithSearch = async (topic: string, niche: string) => {
-  // Fresh instance for every call
+export const getNicheTrends = async (niche: string) => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: `What are 5 trending topics or news items today for creators in the ${niche} niche? Keep them short (under 10 words each).`,
+    config: {
+      tools: [{ googleSearch: {} }],
+    }
+  });
   
+  const text = response.text || "";
+  return text.split('\n').filter(t => t.trim().length > 3).map(t => t.replace(/^\d+\.\s*/, '').trim()).slice(0, 5);
+};
+
+export const generateHooksWithSearch = async (topic: string, niche: string) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
     contents: `Based on current trends, generate 3 viral short-form video hooks for: "${topic}" in the ${niche} niche. 
@@ -21,16 +29,10 @@ export const generateHooksWithSearch = async (topic: string, niche: string) => {
                Provide the data clearly.`,
     config: {
       tools: [{ googleSearch: {} }],
-      // Note: Search grounding responses may contain citations that break JSON parsing if responseMimeType is set.
-      // We will handle the response as text and perform robust extraction if needed.
     }
   });
   
-  // Rule: If Google Search is used, extract URLs from groundingChunks.
-  // Rule: Do not attempt to parse response.text as JSON if grounding is used as it may contain citations.
   const text = response.text || "";
-  
-  // Basic robust extraction for UI stability
   const lines = text.split('\n').filter(l => l.trim().length > 5);
   const results = [
     { text: lines[0] || "Hook 1 based on trends", type: "Search Grounded", viralityScore: 92 },
@@ -42,15 +44,25 @@ export const generateHooksWithSearch = async (topic: string, niche: string) => {
   return { results, sources };
 };
 
-export const generateScript = async (title: string, hook: string) => {
+export const generateScript = async (title: string, hook: string, archetype: ScriptArchetype = 'Storyteller') => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const archetypeInstructions: Record<ScriptArchetype, string> = {
+    'Storyteller': "Focus on emotional stakes, a clear protagonist, and a 'lesson learned' resolution.",
+    'Tutorial': "Clear step-by-step instructions. Quick pacing. Focus on 'the result'.",
+    'Myth-Buster': "Identify a common misconception immediately and provide surprising counter-evidence.",
+    'Listicle': "Fast-paced delivery of 3-5 punchy points. Use numbers to keep attention.",
+    'POV': "Immersive 'Day in the life' or scenario-based perspective. High relatability."
+  };
+
   const response = await ai.models.generateContent({
     model: 'gemini-3-pro-preview',
-    contents: `Write a high-retention short-form video script.
+    contents: `Write a high-retention short-form video script for a ${archetype} style video.
                Title: "${title}"
                Starting Hook: "${hook}"
                
-               Structure the script with:
+               Archetype Guidelines: ${archetypeInstructions[archetype]}
+               
+               Structure:
                1. Hook (0-5s)
                2. Core Value/Story (5-50s)
                3. Strong Call to Action (50-60s)
@@ -65,7 +77,6 @@ export const generateScript = async (title: string, hook: string) => {
 };
 
 export const generateProImage = async (prompt: string, aspectRatio: string, size: string) => {
-  // Fresh instance for potentially updated keys
   const proAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const response = await proAi.models.generateContent({
     model: 'gemini-3-pro-image-preview',
