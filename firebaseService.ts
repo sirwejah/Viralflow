@@ -19,24 +19,25 @@ import {
   query,
   getDocs,
   orderBy,
-  deleteDoc
+  deleteDoc,
+  onSnapshot
 } from "firebase/firestore";
 import { UserProfile, VideoIdea } from "./types";
 
 // Updated configuration from the user's latest Firebase console snippet
 const firebaseConfig = {
-  apiKey: "AIzaSyCKnkGjB_9-Sh8rf8Ulvxb0EJRIo-fnvLQ",
-  authDomain: "viralflow-3bfba.firebaseapp.com",
-  projectId: "viralflow-3bfba",
-  storageBucket: "viralflow-3bfba.firebasestorage.app",
-  messagingSenderId: "172256574572",
-  appId: "1:172256574572:web:1262c5e5dd4960293fac49",
-  measurementId: "G-VEXVHCNKQK"
+  apiKey: "AIzaSyCpaKoTdC-VBCWH3UucXJa4tByKoSOnxL0",
+  authDomain: "gen-lang-client-0351622713.firebaseapp.com",
+  projectId: "gen-lang-client-0351622713",
+  storageBucket: "gen-lang-client-0351622713.firebasestorage.app",
+  messagingSenderId: "434616002983",
+  appId: "1:434616002983:web:8cc6ccbb9f3b7013a6ee82",
+  measurementId: "G-QY63L5P359"
 };
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+export const db = getFirestore(app, "ai-studio-0019d84d-a814-43ee-8076-5e68b5d355aa");
 
 export const signUpUser = async (email: string, password: string, name: string) => {
   const userCredential = await createUserWithEmailAndPassword(auth, email, password);
@@ -67,6 +68,20 @@ export const getProfile = async (uid: string): Promise<UserProfile | null> => {
   return null;
 };
 
+export const subscribeToProfile = (uid: string, callback: (profile: UserProfile | null) => void) => {
+  const docRef = doc(db, "profiles", uid);
+  return onSnapshot(docRef, (docSnap) => {
+    if (docSnap.exists()) {
+      callback(docSnap.data() as UserProfile);
+    } else {
+      callback(null);
+    }
+  }, (error) => {
+    console.error("Profile subscription error:", error);
+    callback(null);
+  });
+};
+
 export const saveProfile = async (uid: string, profile: UserProfile) => {
   await setDoc(doc(db, "profiles", uid), profile);
 };
@@ -88,6 +103,31 @@ export const getIdeas = async (uid: string): Promise<VideoIdea[]> => {
   }));
 };
 
+export const subscribeToIdeas = (uid: string, callback: (ideas: VideoIdea[]) => void) => {
+  const colRef = collection(db, "profiles", uid, "ideas");
+  const q = query(colRef, orderBy("createdAt", "desc"));
+  
+  return onSnapshot(q, (querySnapshot) => {
+    const ideas = querySnapshot.docs.map(doc => ({ 
+      ...doc.data() as VideoIdea,
+      id: doc.id 
+    }));
+    callback(ideas);
+  }, (error) => {
+    console.error("Ideas subscription error:", error);
+    // Fallback if index is missing: try without ordering
+    if (error.message.includes("index")) {
+      onSnapshot(collection(db, "profiles", uid, "ideas"), (snap) => {
+        const ideas = snap.docs.map(doc => ({ 
+          ...doc.data() as VideoIdea,
+          id: doc.id 
+        }));
+        callback(ideas);
+      });
+    }
+  });
+};
+
 export const addIdea = async (uid: string, idea: Omit<VideoIdea, 'id'>) => {
   const colRef = collection(db, "profiles", uid, "ideas");
   const docRef = await addDoc(colRef, {
@@ -101,3 +141,9 @@ export const deleteIdea = async (uid: string, ideaId: string) => {
   const docRef = doc(db, "profiles", uid, "ideas", ideaId);
   await deleteDoc(docRef);
 };
+
+export const updateIdea = async (uid: string, ideaId: string, partialIdea: Partial<VideoIdea>) => {
+  const docRef = doc(db, "profiles", uid, "ideas", ideaId);
+  await updateDoc(docRef, partialIdea);
+};
+

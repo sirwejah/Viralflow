@@ -29,7 +29,10 @@ import {
   updateProfile,
   getIdeas,
   addIdea,
-  deleteIdea
+  deleteIdea,
+  updateIdea,
+  subscribeToProfile,
+  subscribeToIdeas
 } from './firebaseService';
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 
@@ -91,13 +94,24 @@ const Badge = ({ children, color = "purple", ...props }: { children?: React.Reac
 
 // --- New Feature Components ---
 
+const trendCache: Record<string, { data: string[], timestamp: number }> = {};
+
 const TrendTicker = ({ niche }: { niche: string }) => {
   const [trends, setTrends] = useState<string[]>([]);
   useEffect(() => {
     const fetchTrends = async () => {
+      const now = Date.now();
+      if (trendCache[niche] && (now - trendCache[niche].timestamp < 1000 * 60 * 30)) { // 30 min cache
+        setTrends(trendCache[niche].data);
+        return;
+      }
+
       try {
         const data = await getNicheTrends(niche);
-        setTrends(data);
+        if (data && data.length > 0) {
+          setTrends(data);
+          trendCache[niche] = { data, timestamp: now };
+        }
       } catch (e) { console.error(e); }
     };
     fetchTrends();
@@ -125,27 +139,147 @@ const TrendTicker = ({ niche }: { niche: string }) => {
   );
 };
 
-const CalendarFlowView = ({ ideas, onAction }: { ideas: VideoIdea[], onAction: (view: string) => void }) => {
+const CalendarFlowView = ({ 
+  ideas, 
+  onAction,
+  onUpdateIdea,
+  onSelectIdeaForScript,
+  onSaveIdea,
+  onDeleteIdea
+}: { 
+  ideas: VideoIdea[], 
+  onAction: (view: string) => void,
+  onUpdateIdea: (id: string, updates: Partial<VideoIdea>) => Promise<void>,
+  onSelectIdeaForScript: (idea: VideoIdea) => void,
+  onSaveIdea: (idea: any) => Promise<string | undefined>,
+  onDeleteIdea: (id: string) => Promise<void>
+}) => {
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const today = new Date();
   
+  const [selectedOffset, setSelectedOffset] = useState<number | null>(null);
+  const [selectedIdea, setSelectedIdea] = useState<VideoIdea | null>(null);
+  
+  const [isSchedulingNew, setIsSchedulingNew] = useState(false);
+  const [newTitle, setNewTitle] = useState('');
+  const [newHook, setNewHook] = useState('');
+  const [newArchetype, setNewArchetype] = useState<ScriptArchetype>('Storyteller');
+  const [loading, setLoading] = useState(false);
+
   const getDayIdeas = (offset: number) => {
     const targetDate = new Date();
     targetDate.setDate(today.getDate() + offset);
     const dateStr = targetDate.toISOString().split('T')[0];
-    return ideas.filter(i => i.scheduledAt?.startsWith(dateStr));
+    return ideas.filter(i => i.scheduledAt && i.scheduledAt.startsWith(dateStr));
+  };
+
+  const unscheduledIdeas = ideas.filter(i => !i.scheduledAt || i.scheduledAt === '');
+
+  const getMonthYearString = () => {
+    const options: Intl.DateTimeFormatOptions = { month: 'long', year: 'numeric' };
+    return today.toLocaleDateString('en-US', options);
+  };
+
+  const handleScheduleExisting = async (idea: VideoIdea, offset: number) => {
+    const targetDate = new Date();
+    targetDate.setDate(today.getDate() + offset);
+    const dateStr = targetDate.toISOString().split('T')[0];
+    
+    setLoading(true);
+    try {
+      await onUpdateIdea(idea.id, {
+        scheduledAt: `${dateStr}T10:00:00`,
+        status: idea.status === 'idea' ? 'scheduled' : idea.status
+      });
+      setSelectedOffset(null);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateAndSchedule = async (offset: number) => {
+    if (!newTitle || !newHook) return;
+    const targetDate = new Date();
+    targetDate.setDate(today.getDate() + offset);
+    const dateStr = targetDate.toISOString().split('T')[0];
+
+    setLoading(true);
+    try {
+      await onSaveIdea({
+        title: newTitle,
+        hook: newHook,
+        archetype: newArchetype,
+        status: 'scheduled',
+        viralityScore: 85,
+        scheduledAt: `${dateStr}T10:00:00`
+      });
+      setNewTitle('');
+      setNewHook('');
+      setNewArchetype('Storyteller');
+      setSelectedOffset(null);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUnschedule = async (idea: VideoIdea) => {
+    setLoading(true);
+    try {
+      await onUpdateIdea(idea.id, {
+        scheduledAt: '',
+        status: idea.status === 'scheduled' ? 'idea' : idea.status
+      });
+      setSelectedIdea(null);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUpdateStatus = async (idea: VideoIdea, newStatus: any) => {
+    setLoading(true);
+    try {
+      await onUpdateIdea(idea.id, { status: newStatus });
+      setSelectedIdea(prev => prev ? { ...prev, status: newStatus } : null);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async (idea: VideoIdea) => {
+    if (!window.confirm("Are you sure you want to delete this content?")) return;
+    setLoading(true);
+    try {
+      await onDeleteIdea(idea.id);
+      setSelectedIdea(null);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex items-center justify-between">
-        <h2 className="text-3xl font-black">Weekly Flow</h2>
+        <div>
+          <h2 className="text-3xl font-black">Content Flow</h2>
+          <p className="text-zinc-500 text-sm mt-1">Plan, schedule, and organize your social media calendar.</p>
+        </div>
         <div className="flex gap-2">
-           <Badge color="zinc">October 2024</Badge>
-           <button onClick={() => onAction('hooks')} className="bg-purple-600 px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2"><Plus size={16} /> Schedule Video</button>
+           <Badge color="purple">{getMonthYearString()}</Badge>
+           <button onClick={() => { setSelectedOffset(0); setIsSchedulingNew(false); }} className="bg-purple-600 hover:bg-purple-500 transition-colors px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2"><Plus size={16} /> Schedule Video</button>
         </div>
       </div>
-      <div className="grid grid-cols-7 gap-4">
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
         {[0, 1, 2, 3, 4, 5, 6].map(offset => {
           const date = new Date();
           date.setDate(today.getDate() + offset);
@@ -153,30 +287,272 @@ const CalendarFlowView = ({ ideas, onAction }: { ideas: VideoIdea[], onAction: (
           const isToday = offset === 0;
 
           return (
-            <div key={offset} className={`flex flex-col gap-4 min-h-[400px]`}>
-              <div className={`p-4 rounded-xl text-center border ${isToday ? 'bg-purple-600 border-purple-500' : 'bg-zinc-900 border-zinc-800'}`}>
-                <p className={`text-xs font-black uppercase ${isToday ? 'text-white' : 'text-zinc-500'}`}>{days[date.getDay()]}</p>
-                <p className={`text-xl font-black ${isToday ? 'text-white' : 'text-white'}`}>{date.getDate()}</p>
-              </div>
-              <div className="flex-1 rounded-2xl bg-zinc-900/30 border border-dashed border-zinc-800 p-2 space-y-2">
-                {dayIdeas.length > 0 ? dayIdeas.map(idea => (
-                  <div key={idea.id} className="bg-[#151518] border border-zinc-800 rounded-xl p-3 shadow-sm group hover:border-purple-500 transition-all cursor-pointer">
-                    <Badge color={idea.status === 'ready' ? 'green' : 'blue'}>{idea.status}</Badge>
-                    <h4 className="text-xs font-bold mt-2 line-clamp-2">{idea.title}</h4>
-                    <div className="flex items-center gap-1 mt-2 text-[10px] text-zinc-500">
-                      <Clock size={10} /> 10:00 AM
+            <div key={offset} className="flex flex-col gap-4 min-h-[400px]">
+              <button 
+                onClick={() => { setSelectedOffset(offset); setIsSchedulingNew(false); }}
+                className={`p-4 rounded-xl text-center border transition-all text-left w-full hover:border-purple-500 ${isToday ? 'bg-purple-600 border-purple-500' : 'bg-zinc-900 border-zinc-800'}`}
+              >
+                <p className={`text-xs font-black uppercase ${isToday ? 'text-purple-200' : 'text-zinc-500'}`}>{days[date.getDay()]}</p>
+                <p className="text-2xl font-black text-white">{date.getDate()}</p>
+              </button>
+              
+              <div className="flex-1 rounded-2xl bg-zinc-900/30 border border-dashed border-zinc-800/60 p-2 space-y-2 flex flex-col">
+                {dayIdeas.length > 0 ? (
+                  dayIdeas.map(idea => (
+                    <div 
+                      key={idea.id} 
+                      onClick={() => setSelectedIdea(idea)}
+                      className="bg-[#151518] border border-zinc-800/80 rounded-xl p-3 shadow-md group hover:border-purple-500 hover:shadow-purple-950/10 transition-all cursor-pointer text-left"
+                    >
+                      <div className="flex items-center justify-between">
+                        <Badge color={idea.status === 'ready' || idea.status === 'posted' ? 'green' : 'blue'}>
+                          {idea.status}
+                        </Badge>
+                        {idea.archetype && (
+                          <span className="text-[9px] text-zinc-500 font-bold uppercase">{idea.archetype}</span>
+                        )}
+                      </div>
+                      <h4 className="text-xs font-bold mt-2 line-clamp-2 text-zinc-200 group-hover:text-white transition-colors">{idea.title}</h4>
+                      <div className="flex items-center justify-between mt-3 text-[10px] text-zinc-500 border-t border-zinc-800/40 pt-2">
+                        <span className="flex items-center gap-1"><Clock size={10} /> 10:00 AM</span>
+                        <span className="text-emerald-500 font-bold">{idea.viralityScore}%</span>
+                      </div>
                     </div>
-                  </div>
-                )) : (
-                  <div className="h-full flex items-center justify-center opacity-20">
-                    <Plus size={24} />
-                  </div>
+                  ))
+                ) : (
+                  <button 
+                    onClick={() => { setSelectedOffset(offset); setIsSchedulingNew(false); }}
+                    className="flex-1 flex items-center justify-center text-zinc-600 hover:text-purple-400 hover:bg-zinc-900/10 rounded-xl transition-all min-h-[100px]"
+                  >
+                    <Plus size={20} className="opacity-40" />
+                  </button>
                 )}
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* MODAL: Schedule Video / Select from existing queue */}
+      {selectedOffset !== null && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#111113] border border-zinc-800 rounded-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+            <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-white">Schedule Video</h3>
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  Target Date: {(() => {
+                    const d = new Date();
+                    d.setDate(today.getDate() + selectedOffset);
+                    return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+                  })()}
+                </p>
+              </div>
+              <button 
+                onClick={() => { setSelectedOffset(null); setIsSchedulingNew(false); }}
+                className="text-zinc-500 hover:text-white p-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Selector tabs */}
+            <div className="px-6 pt-4 flex gap-2 border-b border-zinc-800/40">
+              <button 
+                onClick={() => setIsSchedulingNew(false)}
+                className={`pb-3 text-xs font-black uppercase tracking-wider border-b-2 px-1 transition-all ${!isSchedulingNew ? 'border-purple-500 text-white' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+              >
+                Choose Existing Idea ({unscheduledIdeas.length})
+              </button>
+              <button 
+                onClick={() => setIsSchedulingNew(true)}
+                className={`pb-3 text-xs font-black uppercase tracking-wider border-b-2 px-1 transition-all ${isSchedulingNew ? 'border-purple-500 text-white' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+              >
+                Create New & Schedule
+              </button>
+            </div>
+
+            <div className="flex-1 p-6 overflow-y-auto space-y-4">
+              {!isSchedulingNew ? (
+                unscheduledIdeas.length > 0 ? (
+                  <div className="space-y-3">
+                    <p className="text-xs text-zinc-400 font-medium">Select an unscheduled idea from your creator pipeline:</p>
+                    <div className="grid gap-2">
+                      {unscheduledIdeas.map(idea => (
+                        <button
+                          key={idea.id}
+                          disabled={loading}
+                          onClick={() => handleScheduleExisting(idea, selectedOffset)}
+                          className="w-full text-left bg-zinc-900/60 hover:bg-zinc-900 hover:border-purple-500 border border-zinc-800 rounded-xl p-4 transition-all flex justify-between items-center group"
+                        >
+                          <div className="space-y-1 pr-4">
+                            <div className="flex items-center gap-2">
+                              <Badge color={idea.status === 'scripted' ? 'purple' : 'zinc'}>{idea.status}</Badge>
+                              {idea.archetype && (
+                                <span className="text-[10px] text-zinc-500 font-bold uppercase">{idea.archetype}</span>
+                              )}
+                            </div>
+                            <h4 className="font-bold text-sm text-zinc-200 group-hover:text-white transition-colors">{idea.title}</h4>
+                            <p className="text-xs text-zinc-500 italic line-clamp-1">"{idea.hook}"</p>
+                          </div>
+                          <ChevronRight size={18} className="text-zinc-600 group-hover:text-purple-400 transition-colors" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center py-12 space-y-4">
+                    <div className="w-12 h-12 bg-zinc-900 rounded-full flex items-center justify-center mx-auto text-zinc-600">
+                      <LayoutGrid size={20} />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-sm text-zinc-300">Creator queue is empty</h4>
+                      <p className="text-xs text-zinc-500 mt-1">You don't have any unscheduled ideas yet. Create a new one or generate some hooks first!</p>
+                    </div>
+                    <button 
+                      onClick={() => setIsSchedulingNew(true)} 
+                      className="text-xs bg-purple-600 hover:bg-purple-500 text-white font-bold px-4 py-2 rounded-lg transition-all"
+                    >
+                      Create New Idea
+                    </button>
+                  </div>
+                )
+              ) : (
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-zinc-500 uppercase tracking-wider px-1">Video Title</label>
+                    <input 
+                      value={newTitle} 
+                      onChange={e => setNewTitle(e.target.value)} 
+                      placeholder="e.g., The raw truth about AI business" 
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 focus:border-purple-500 outline-none text-sm text-white" 
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-zinc-500 uppercase tracking-wider px-1">Hook Statement</label>
+                    <textarea 
+                      value={newHook} 
+                      onChange={e => setNewHook(e.target.value)} 
+                      rows={3} 
+                      placeholder="e.g., 99% of people are starting AI businesses wrong. Here is why..." 
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 focus:border-purple-500 outline-none resize-none text-sm text-white" 
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-zinc-500 uppercase tracking-wider px-1">Script Archetype</label>
+                    <select 
+                      value={newArchetype} 
+                      onChange={e => setNewArchetype(e.target.value as ScriptArchetype)} 
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 focus:border-purple-500 outline-none text-sm text-white"
+                    >
+                      <option value="Storyteller">Storyteller</option>
+                      <option value="Tutorial">Tutorial</option>
+                      <option value="Myth-Buster">Myth-Buster</option>
+                      <option value="Listicle">Listicle</option>
+                      <option value="POV">POV</option>
+                    </select>
+                  </div>
+                  <button 
+                    onClick={() => handleCreateAndSchedule(selectedOffset)} 
+                    disabled={loading || !newTitle || !newHook}
+                    className="w-full py-3.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-xl font-bold transition-all text-sm flex items-center justify-center gap-2 mt-2 shadow-lg shadow-purple-900/20"
+                  >
+                    {loading ? <Loader2 className="animate-spin" size={18} /> : <Plus size={18} />}
+                    Create & Schedule Video
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Manage Scheduled Video */}
+      {selectedIdea !== null && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#111113] border border-zinc-800 rounded-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col">
+            <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Badge color={selectedIdea.status === 'ready' || selectedIdea.status === 'posted' ? 'green' : 'blue'}>
+                    {selectedIdea.status}
+                  </Badge>
+                  {selectedIdea.archetype && (
+                    <span className="text-[10px] text-zinc-500 font-black uppercase tracking-wider">{selectedIdea.archetype}</span>
+                  )}
+                </div>
+                <h3 className="text-lg font-bold text-white mt-2 line-clamp-1">{selectedIdea.title}</h3>
+              </div>
+              <button 
+                onClick={() => setSelectedIdea(null)}
+                className="text-zinc-500 hover:text-white p-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6">
+              <div className="space-y-1">
+                <p className="text-[10px] font-black text-zinc-500 uppercase tracking-wider">Hook</p>
+                <p className="text-sm text-zinc-300 bg-zinc-900/40 border border-zinc-800/60 p-4 rounded-xl leading-relaxed italic">
+                  "{selectedIdea.hook}"
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-zinc-500 uppercase tracking-wider">Content Status</label>
+                  <select
+                    value={selectedIdea.status}
+                    onChange={(e) => handleUpdateStatus(selectedIdea, e.target.value as any)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 focus:border-purple-500 outline-none text-xs text-white"
+                  >
+                    <option value="idea">Idea</option>
+                    <option value="scripted">Scripted</option>
+                    <option value="generating">Generating</option>
+                    <option value="ready">Ready</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="posted">Posted</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-zinc-500 uppercase tracking-wider">Scheduled Date</label>
+                  <div className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs text-zinc-400 flex items-center gap-2">
+                    <Clock size={12} className="text-zinc-500" />
+                    {selectedIdea.scheduledAt ? new Date(selectedIdea.scheduledAt).toLocaleDateString() : 'Not scheduled'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-zinc-800/60 pt-6 flex flex-col sm:flex-row gap-3">
+                <button 
+                  onClick={() => {
+                    onSelectIdeaForScript(selectedIdea);
+                    onAction('scripts');
+                    setSelectedIdea(null);
+                  }}
+                  className="flex-1 py-3 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl transition-all text-sm flex items-center justify-center gap-2"
+                >
+                  <PenTool size={16} /> Edit Script
+                </button>
+                <button 
+                  onClick={() => handleUnschedule(selectedIdea)}
+                  className="flex-1 py-3 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-bold rounded-xl border border-zinc-800 hover:border-zinc-700 transition-all text-sm flex items-center justify-center gap-2"
+                >
+                  <Timer size={16} /> Unschedule
+                </button>
+                <button 
+                  onClick={() => handleDelete(selectedIdea)}
+                  className="p-3 bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white font-bold rounded-xl border border-rose-500/20 transition-all flex items-center justify-center"
+                  title="Delete content"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -202,7 +578,17 @@ const AuthView = ({ mode, onSwitch, onSuccess }: { mode: 'login' | 'signup', onS
         onSuccess(user);
       }
     } catch (err: any) {
-      setError(err.message || 'Authentication failed');
+      let friendlyError = err.message || 'Authentication failed';
+      if (friendlyError.includes('auth/password-does-not-meet-requirements') || friendlyError.includes('password-does-not-meet-requirements') || friendlyError.includes('non-alphanumeric')) {
+        friendlyError = 'Password does not meet requirements: It must contain at least one non-alphanumeric character (a symbol like !, @, #, $, etc.).';
+      } else if (friendlyError.includes('auth/weak-password')) {
+        friendlyError = 'Password is too weak. It must be at least 6 characters long.';
+      } else if (friendlyError.includes('auth/invalid-email')) {
+        friendlyError = 'Please enter a valid email address.';
+      } else if (friendlyError.includes('auth/email-already-in-use')) {
+        friendlyError = 'This email is already registered. Try logging in instead.';
+      }
+      setError(friendlyError);
     } finally {
       setLoading(false);
     }
@@ -247,6 +633,11 @@ const AuthView = ({ mode, onSwitch, onSuccess }: { mode: 'login' | 'signup', onS
               <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
               <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-12 pr-4 py-3 focus:border-purple-500 outline-none transition-all" />
             </div>
+            {mode === 'signup' && (
+              <p className="text-[11px] text-zinc-400 mt-1 px-1">
+                Choose a password with at least <span className="text-purple-400 font-semibold">one symbol (e.g. !, @, #, $, %, etc.)</span> and 6+ characters.
+              </p>
+            )}
           </div>
           <button type="submit" disabled={loading} className="w-full py-4 bg-purple-600 hover:bg-purple-500 text-white font-black rounded-xl transition-all shadow-lg shadow-purple-600/20 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3">
             {loading ? <Loader2 className="animate-spin" size={20} /> : (mode === 'login' ? 'Sign In' : 'Create Account')}
@@ -333,7 +724,39 @@ const SettingsView = ({ profile, onUpdateProfile, onLogout }: { profile: UserPro
   );
 };
 
-const DashboardView = ({ userProfile, ideas, onDeleteIdea, onAction }: { userProfile: UserProfile, ideas: VideoIdea[], onDeleteIdea: (id: string) => void, onAction: (view: string) => void }) => {
+const DashboardView = ({ 
+  userProfile, 
+  ideas, 
+  onDeleteIdea, 
+  onAction, 
+  onSelectIdeaForScript 
+}: { 
+  userProfile: UserProfile, 
+  ideas: VideoIdea[], 
+  onDeleteIdea: (id: string) => void, 
+  onAction: (view: string) => void,
+  onSelectIdeaForScript: (idea: VideoIdea) => void
+}) => {
+  const [metrics, setMetrics] = useState([
+    { label: "Total Views", value: "142.8K", previous: "126.9K", trend: 12.5, positive: true },
+    { label: "Engagement Rate", value: "8.42%", previous: "8.27%", trend: 1.8, positive: true },
+    { label: "Viral Reach", value: "64.2K", previous: "67.0K", trend: -4.2, positive: false }
+  ]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    setTimeout(() => {
+      setMetrics(prev => prev.map(m => ({
+        ...m,
+        value: (parseFloat(m.value) * (1 + (Math.random() * 0.05 - 0.02))).toFixed(2) + (m.value.includes('K') ? 'K' : '%'),
+        trend: parseFloat((Math.random() * 15 - 5).toFixed(1)),
+        positive: Math.random() > 0.3
+      })));
+      setRefreshing(false);
+    }, 1000);
+  };
+
   return (
     <div className="space-y-10 pb-20 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <Card className="relative overflow-hidden group border-purple-500/20 bg-gradient-to-br from-[#1A1A1E] to-purple-950/20 p-10 md:p-14">
@@ -350,9 +773,15 @@ const DashboardView = ({ userProfile, ideas, onDeleteIdea, onAction }: { userPro
       </Card>
       
       <section className="space-y-6">
-        <div className="flex items-center justify-between px-2"><h3 className="text-xl font-bold flex items-center gap-2"><BarChart3 className="text-purple-500" size={20} />Performance Snapshot</h3><span className="text-xs font-bold text-zinc-500 uppercase tracking-widest">vs. Previous Week</span></div>
+        <div className="flex items-center justify-between px-2">
+          <h3 className="text-xl font-bold flex items-center gap-2"><BarChart3 className="text-purple-500" size={20} />Performance Snapshot</h3>
+          <button onClick={handleRefresh} disabled={refreshing} className="text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2 hover:text-white transition-colors">
+            {refreshing ? <RefreshCw size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            {refreshing ? 'Syncing...' : 'vs. Previous Week'}
+          </button>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {[ { label: "Total Views", value: "142.8K", previous: "126.9K", trend: 12.5, positive: true }, { label: "Engagement Rate", value: "8.42%", previous: "8.27%", trend: 1.8, positive: true }, { label: "Viral Reach", value: "64.2K", previous: "67.0K", trend: -4.2, positive: false } ].map((metric, i) => (
+          {metrics.map((metric, i) => (
             <Card key={i} className="flex flex-col justify-between py-8 hover:border-zinc-700 group transition-all">
               <p className="text-xs font-black text-zinc-500 uppercase tracking-[0.2em] mb-4 group-hover:text-purple-400 transition-colors">{metric.label}</p>
               <div className="space-y-2">
@@ -368,16 +797,33 @@ const DashboardView = ({ userProfile, ideas, onDeleteIdea, onAction }: { userPro
         <div className="grid gap-4">
           {ideas.length > 0 ? ideas.map((idea) => (
             <Card key={idea.id} className="p-4 flex flex-col md:flex-row items-center gap-6 group/item hover:bg-zinc-900/20">
-              <div className="w-full md:w-20 aspect-[9/16] bg-zinc-900 rounded-lg overflow-hidden border border-white/5 relative flex-shrink-0"><img src={`https://picsum.photos/seed/${idea.id}/200/360`} className="w-full h-full object-cover opacity-50" /><div className="absolute inset-0 flex items-center justify-center"><Play size={20} className="text-white/40" /></div></div>
+              <div className="w-full md:w-20 aspect-[9/16] bg-zinc-900 rounded-lg overflow-hidden border border-white/5 relative flex-shrink-0"><img src={`https://picsum.photos/seed/${idea.id}/200/360`} className="w-full h-full object-cover opacity-50" referrerPolicy="no-referrer" /><div className="absolute inset-0 flex items-center justify-center"><Play size={20} className="text-white/40" /></div></div>
               <div className="flex-1 space-y-1 w-full text-left">
                 <div className="flex items-center gap-2"><Badge color={idea.status === 'ready' ? 'green' : 'blue'}>{idea.status}</Badge><div className="flex gap-1"><Instagram size={12} className="text-zinc-600" /><Youtube size={12} className="text-zinc-600" /></div></div>
                 <h4 className="font-bold text-lg">{idea.title}</h4>
                 <p className="text-zinc-500 text-sm italic line-clamp-1">"{idea.hook}"</p>
               </div>
               <div className="flex gap-2 w-full md:w-auto md:opacity-0 group-hover/item:opacity-100 transition-opacity">
-                <button onClick={() => onDeleteIdea(idea.id)} className="p-3 bg-zinc-900 hover:bg-rose-500/10 text-zinc-500 hover:text-rose-500 rounded-xl transition-all"><Trash2 size={16} /></button>
-                <button className="p-3 bg-zinc-900 hover:bg-zinc-800 rounded-xl text-zinc-400 hover:text-white transition-all"><Copy size={16} /></button>
-                <button className="px-6 py-3 bg-purple-600 hover:bg-purple-500 rounded-xl font-bold text-sm">Open</button>
+                <button onClick={() => onDeleteIdea(idea.id)} className="p-3 bg-zinc-900 hover:bg-rose-500/10 text-zinc-500 hover:text-rose-500 rounded-xl transition-all" title="Delete creation"><Trash2 size={16} /></button>
+                <button 
+                  onClick={() => {
+                    navigator.clipboard.writeText(`Title: ${idea.title}\n\nHook: ${idea.hook}\n\nScript: ${idea.script || ''}`);
+                    alert("Copied creation details to clipboard!");
+                  }} 
+                  className="p-3 bg-zinc-900 hover:bg-zinc-800 rounded-xl text-zinc-400 hover:text-white transition-all"
+                  title="Copy to clipboard"
+                >
+                  <Copy size={16} />
+                </button>
+                <button 
+                  onClick={() => {
+                    onSelectIdeaForScript(idea);
+                    onAction('scripts');
+                  }}
+                  className="px-6 py-3 bg-purple-600 hover:bg-purple-500 rounded-xl font-bold text-sm"
+                >
+                  Open
+                </button>
               </div>
             </Card>
           )) : (
@@ -468,7 +914,7 @@ function CoachView() {
       const sources = new Set<AudioBufferSourceNode>();
 
       const sessionPromise = ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+        model: 'gemini-3.1-flash-live-preview',
         callbacks: {
           onopen: () => {
             setLiveActive(true);
@@ -512,7 +958,7 @@ function CoachView() {
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-          systemInstruction: "You are a world-class viral growth consultant. Use deep reasoning to provide strategy. Keep responses concise and energetic."
+          systemInstruction: "You are a world-class viral growth consultant. Use deep reasoning to provide strategy."
         }
       });
       sessionRef.current = sessionPromise;
@@ -718,21 +1164,71 @@ const Onboarding = ({ step, initialProfile, onNext, onComplete }: { step: number
 
 // --- Content Creation Views ---
 
-const HookGeneratorView = ({ userProfile, onSaveIdea }: { userProfile: UserProfile, onSaveIdea: (idea: any) => void }) => {
+const HookGeneratorView = ({ 
+  userProfile, 
+  onSaveIdea, 
+  onSelectIdeaForScript, 
+  onAction 
+}: { 
+  userProfile: UserProfile, 
+  onSaveIdea: (idea: any) => Promise<string | undefined>, 
+  onSelectIdeaForScript: (idea: VideoIdea) => void, 
+  onAction: (view: string) => void 
+}) => {
   const [topic, setTopic] = useState('');
   const [niche, setNiche] = useState<Niche>(userProfile.niche[0] || 'AI');
   const [loading, setLoading] = useState(false);
   const [hooks, setHooks] = useState<any[]>([]);
   const [sources, setSources] = useState<any[]>([]);
+  const [savedIndices, setSavedIndices] = useState<Record<number, boolean>>({});
 
   const handleGenerate = async () => {
     if (!topic) return;
     setLoading(true);
+    setSavedIndices({});
     try {
       const { results, sources: s } = await generateHooksWithSearch(topic, niche);
       setHooks(results);
       setSources(s);
     } catch (e) { console.error(e); } finally { setLoading(false); }
+  };
+
+  const handleSave = async (hook: any, index: number) => {
+    if (savedIndices[index]) return;
+    try {
+      await onSaveIdea({ 
+        title: topic, 
+        hook: hook.text, 
+        viralityScore: hook.viralityScore, 
+        status: 'idea' 
+      });
+      setSavedIndices(prev => ({ ...prev, [index]: true }));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSaveAndScript = async (hook: any) => {
+    try {
+      const generatedId = await onSaveIdea({ 
+        title: topic, 
+        hook: hook.text, 
+        viralityScore: hook.viralityScore, 
+        status: 'idea' 
+      });
+      if (generatedId) {
+        onSelectIdeaForScript({
+          id: generatedId,
+          title: topic,
+          hook: hook.text,
+          viralityScore: hook.viralityScore,
+          status: 'idea'
+        });
+        onAction('scripts');
+      }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   return (
@@ -769,8 +1265,20 @@ const HookGeneratorView = ({ userProfile, onSaveIdea }: { userProfile: UserProfi
                   <p className="text-xl font-bold leading-relaxed">"{hook.text}"</p>
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={() => onSaveIdea({ title: topic, hook: hook.text, viralityScore: hook.viralityScore, status: 'idea' })} className="px-6 py-3 bg-zinc-900 hover:bg-zinc-800 rounded-xl font-bold border border-white/5 transition-all flex items-center gap-2"><Plus size={18} /> Save Idea</button>
-                  <button className="p-3 bg-purple-600 hover:bg-purple-500 rounded-xl transition-all shadow-lg shadow-purple-900/20"><ArrowRight size={20} /></button>
+                  <button 
+                    onClick={() => handleSave(hook, i)} 
+                    className={`px-6 py-3 rounded-xl font-bold border transition-all flex items-center gap-2 ${savedIndices[i] ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500' : 'bg-zinc-900 hover:bg-zinc-800 border-white/5'}`}
+                  >
+                    {savedIndices[i] ? <Check size={18} /> : <Plus size={18} />}
+                    {savedIndices[i] ? 'Saved Idea' : 'Save Idea'}
+                  </button>
+                  <button 
+                    onClick={() => handleSaveAndScript(hook)}
+                    title="Save and write Script"
+                    className="p-3 bg-purple-600 hover:bg-purple-500 rounded-xl transition-all shadow-lg shadow-purple-900/20 flex items-center justify-center"
+                  >
+                    <ArrowRight size={20} />
+                  </button>
                 </div>
               </div>
             </Card>
@@ -793,56 +1301,189 @@ const HookGeneratorView = ({ userProfile, onSaveIdea }: { userProfile: UserProfi
   );
 };
 
-const ScriptBuilderView = ({ onSaveIdea }: { onSaveIdea: (idea: any) => void }) => {
+const ScriptBuilderView = ({ 
+  activeIdea, 
+  setActiveIdea, 
+  onSaveIdea, 
+  onUpdateIdea 
+}: { 
+  activeIdea: VideoIdea | null, 
+  setActiveIdea: (idea: VideoIdea | null) => void,
+  onSaveIdea: (idea: any) => Promise<string | undefined>,
+  onUpdateIdea: (id: string, updates: Partial<VideoIdea>) => Promise<void>
+}) => {
   const [title, setTitle] = useState('');
   const [hook, setHook] = useState('');
   const [archetype, setArchetype] = useState<ScriptArchetype>('Storyteller');
   const [script, setScript] = useState('');
   const [loading, setLoading] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+
+  useEffect(() => {
+    if (activeIdea) {
+      setTitle(activeIdea.title || '');
+      setHook(activeIdea.hook || '');
+      setArchetype(activeIdea.archetype || 'Storyteller');
+      setScript(activeIdea.script || '');
+    } else {
+      setTitle('');
+      setHook('');
+      setArchetype('Storyteller');
+      setScript('');
+    }
+    setSaveStatus('idle');
+  }, [activeIdea]);
 
   const handleGenerate = async () => {
     if (!title || !hook) return;
     setLoading(true);
+    setSaveStatus('idle');
     try {
       const result = await generateScript(title, hook, archetype);
       setScript(result || '');
-    } catch (e) { console.error(e); } finally { setLoading(false); }
+    } catch (e) { 
+      console.error(e); 
+    } finally { 
+      setLoading(false); 
+    }
   };
 
-  const archetypes: ScriptArchetype[] = ['Storyteller', 'Tutorial', 'Myth-Buster', 'Listicle', 'POV'];
+  const handleSave = async () => {
+    setSaveStatus('saving');
+    try {
+      if (activeIdea?.id) {
+        await onUpdateIdea(activeIdea.id, {
+          title,
+          hook,
+          script,
+          archetype,
+          status: 'scripted'
+        });
+        setSaveStatus('saved');
+        setTimeout(() => setSaveStatus('idle'), 2000);
+      } else {
+        const newId = await onSaveIdea({
+          title,
+          hook,
+          script,
+          archetype,
+          status: 'scripted',
+          viralityScore: 90
+        });
+        if (newId) {
+          setActiveIdea({
+            id: newId,
+            title,
+            hook,
+            script,
+            archetype,
+            status: 'scripted',
+            viralityScore: 90
+          });
+        }
+        setSaveStatus('saved');
+        setTimeout(() => setSaveStatus('idle'), 2000);
+      }
+    } catch (e) {
+      console.error(e);
+      setSaveStatus('idle');
+    }
+  };
+
+  const archetypes: { name: ScriptArchetype, description: string }[] = [
+    { name: 'Storyteller', description: 'Hero\'s journey or emotional arc' },
+    { name: 'Tutorial', description: 'Step-by-step actionable guide' },
+    { name: 'Myth-Buster', description: 'Debunking a common industry lie' },
+    { name: 'Listicle', description: '3 to 5 fast-paced points' },
+    { name: 'POV', description: 'First-person relative scenario' }
+  ];
+
+  const handleCopy = () => {
+    if (!script) return;
+    navigator.clipboard.writeText(script);
+  };
 
   return (
     <div className="grid md:grid-cols-5 gap-8 animate-in fade-in duration-500">
       <div className="md:col-span-2 space-y-6">
         <Card className="space-y-6">
-          <div className="space-y-2"><label className="text-xs font-bold text-zinc-500 uppercase">Video Title</label><input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g., The secret to 10k followers" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 focus:border-purple-500 outline-none" /></div>
-          <div className="space-y-2"><label className="text-xs font-bold text-zinc-500 uppercase">Starting Hook</label><textarea value={hook} onChange={e => setHook(e.target.value)} rows={3} placeholder="Paste your hook here..." className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 focus:border-purple-500 outline-none resize-none" /></div>
+          <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+            <h3 className="font-bold text-zinc-300">
+              {activeIdea ? 'Editing Scripted Idea' : 'Create New Script'}
+            </h3>
+            {activeIdea && (
+              <button 
+                onClick={() => setActiveIdea(null)} 
+                className="text-xs font-bold text-purple-400 hover:text-purple-300 flex items-center gap-1 bg-purple-500/10 px-2 py-1 rounded"
+              >
+                + New Blank
+              </button>
+            )}
+          </div>
+          <div className="space-y-2"><label className="text-xs font-bold text-zinc-500 uppercase">Video Title</label><input value={title} onChange={e => { setTitle(e.target.value); setSaveStatus('idle'); }} placeholder="e.g., The secret to 10k followers" className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 focus:border-purple-500 outline-none" /></div>
+          <div className="space-y-2"><label className="text-xs font-bold text-zinc-500 uppercase">Starting Hook</label><textarea value={hook} onChange={e => { setHook(e.target.value); setSaveStatus('idle'); }} rows={3} placeholder="Paste your hook here..." className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 focus:border-purple-500 outline-none resize-none" /></div>
           <div className="space-y-2">
             <label className="text-xs font-bold text-zinc-500 uppercase">Script Archetype</label>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 gap-2">
                {archetypes.map(a => (
-                 <button key={a} onClick={() => setArchetype(a)} className={`px-3 py-2 text-xs font-bold rounded-lg border transition-all ${archetype === a ? 'bg-purple-600 border-purple-500 text-white' : 'bg-zinc-900 border-zinc-800 text-zinc-500'}`}>{a}</button>
+                 <button 
+                   key={a.name} 
+                   onClick={() => { setArchetype(a.name); setSaveStatus('idle'); }} 
+                   className={`px-4 py-2 text-left rounded-xl border transition-all flex flex-col ${archetype === a.name ? 'bg-purple-600 border-purple-500 text-white' : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:border-zinc-700'}`}
+                 >
+                   <span className="font-bold text-sm">{a.name}</span>
+                   <span className={`text-[10px] ${archetype === a.name ? 'text-purple-200' : 'text-zinc-500'}`}>{a.description}</span>
+                 </button>
                ))}
             </div>
           </div>
           <button onClick={handleGenerate} disabled={loading || !title || !hook} className="w-full py-4 bg-purple-600 hover:bg-purple-500 rounded-xl font-black transition-all flex items-center justify-center gap-3 shadow-lg shadow-purple-900/20">
-            {loading ? <RefreshCw className="animate-spin" /> : <PenTool size={20} />}
+            {loading ? <Loader2 className="animate-spin" /> : <PenTool size={20} />}
             {loading ? 'Reasoning with Pro...' : 'Build Full Script'}
           </button>
         </Card>
         {script && (
-          <button onClick={() => onSaveIdea({ title, hook, script, archetype, status: 'scripted', viralityScore: 90 })} className="w-full py-4 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-xl font-bold flex items-center justify-center gap-2 transition-all">
-            <Save size={20} /> Save to Content Flow
+          <button 
+            onClick={handleSave} 
+            disabled={saveStatus === 'saving'}
+            className={`w-full py-4 border rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${saveStatus === 'saved' ? 'bg-emerald-600/10 border-emerald-500 text-emerald-500' : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800'}`}
+          >
+            {saveStatus === 'saving' ? <Loader2 className="animate-spin" /> : saveStatus === 'saved' ? <Check size={20} /> : <Save size={20} />}
+            {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to Pipeline!' : activeIdea ? 'Update Script' : 'Save to Pipeline'}
           </button>
         )}
       </div>
       <div className="md:col-span-3">
-        <Card className="h-full min-h-[500px] flex flex-col p-0 overflow-hidden">
-          <div className="p-4 border-b border-zinc-800 bg-zinc-900/50 flex items-center justify-between"><div className="flex items-center gap-2"><Smartphone size={16} className="text-zinc-500" /><span className="text-xs font-bold uppercase tracking-widest text-zinc-400">Retention Script Editor</span></div>{script && <Badge color="green">AI Draft Ready</Badge>}</div>
-          <div className="flex-1 p-8 overflow-y-auto whitespace-pre-wrap font-medium leading-relaxed text-zinc-300">
-            {script ? script : <div className="h-full flex flex-col items-center justify-center text-zinc-600 text-center space-y-4"><div className="w-16 h-16 bg-zinc-900 rounded-3xl flex items-center justify-center"><PenTool size={32} /></div><p>Select an archetype and build your script <br />using Gemini 3 Pro Reasoning.</p></div>}
+        <Card className="h-full min-h-[550px] flex flex-col p-0 overflow-hidden">
+          <div className="p-4 border-b border-zinc-800 bg-zinc-900/50 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Smartphone size={16} className="text-zinc-500" />
+              <span className="text-xs font-bold uppercase tracking-widest text-zinc-400">Retention Script Editor</span>
+            </div>
+            {script && <Badge color="green">Active Draft</Badge>}
           </div>
-          {script && <div className="p-4 bg-zinc-900/50 border-t border-zinc-800 flex justify-end gap-3"><button className="p-3 text-zinc-500 hover:text-white transition-colors"><Copy size={18} /></button><button className="p-3 text-zinc-500 hover:text-white transition-colors"><RefreshCw size={18} /></button></div>}
+          <div className="flex-1 p-0 overflow-hidden relative">
+            {script ? (
+              <textarea
+                className="w-full h-full bg-transparent p-8 text-zinc-300 leading-relaxed font-medium outline-none resize-none font-sans"
+                style={{ minHeight: '400px' }}
+                value={script}
+                onChange={(e) => { setScript(e.target.value); setSaveStatus('idle'); }}
+                placeholder="Write or edit your script..."
+              />
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-600 text-center space-y-4">
+                <div className="w-16 h-16 bg-zinc-900 rounded-3xl flex items-center justify-center"><PenTool size={32} /></div>
+                <p>Select an archetype and build your script <br />using Gemini 3 Pro Reasoning.</p>
+              </div>
+            )}
+          </div>
+          {script && (
+            <div className="p-4 bg-zinc-900/50 border-t border-zinc-800 flex justify-end gap-3">
+              <button onClick={handleCopy} className="p-3 text-zinc-500 hover:text-white transition-colors" title="Copy script text"><Copy size={18} /></button>
+              <button onClick={handleGenerate} className="p-3 text-zinc-500 hover:text-white transition-colors" title="Regenerate script"><RefreshCw size={18} /></button>
+            </div>
+          )}
         </Card>
       </div>
     </div>
@@ -999,55 +1640,70 @@ export default function App() {
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [ideas, setIdeas] = useState<VideoIdea[]>([]);
-
-  const fetchUserData = async (uid: string) => {
-    try {
-      const profile = await getProfile(uid);
-      // Wrapped in a catch to avoid hanging the app if Firestore index is missing
-      const userIdeas = await getIdeas(uid).catch(err => {
-        console.warn("Firestore could not fetch ideas (likely missing index). Proceeding with empty list.", err);
-        return [];
-      });
-      setIdeas(userIdeas);
-      return profile;
-    } catch (e) {
-      console.error("Error fetching user data:", e);
-      return null;
-    }
-  };
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [editingIdea, setEditingIdea] = useState<VideoIdea | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    let unsubscribeProfile: (() => void) | null = null;
+    let unsubscribeIdeas: (() => void) | null = null;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      setIsAuthReady(true);
       if (user) {
-        const profile = await fetchUserData(user.uid);
+        // Initial profile fetch to determine view
+        const profile = await getProfile(user.uid);
         if (profile && profile.platforms && profile.platforms.length > 0) {
           setUserProfile(profile);
           setView('app');
-          setCurrentSubView('dashboard');
         } else {
           setUserProfile(profile || { name: user.displayName || 'Creator', platforms: [], creatorType: 'Personal Brand', niche: [], plan: 'Starter' });
           setView('app');
           setOnboardingStep(0);
         }
-      } else { 
-        setView('landing'); 
+
+        // Setup real-time subscriptions
+        unsubscribeProfile = subscribeToProfile(user.uid, (p) => {
+          if (p) setUserProfile(p);
+        });
+        unsubscribeIdeas = subscribeToIdeas(user.uid, (i) => {
+          setIdeas(i);
+        });
+      } else {
+        setView('landing');
+        setUserProfile(null);
+        setIdeas([]);
+        if (unsubscribeProfile) unsubscribeProfile();
+        if (unsubscribeIdeas) unsubscribeIdeas();
       }
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeProfile) unsubscribeProfile();
+      if (unsubscribeIdeas) unsubscribeIdeas();
+    };
   }, []);
 
-  const handleLogout = async () => { await logoutUser(); setUserProfile(null); setIdeas([]); setView('landing'); setOnboardingStep(0); };
-  const handleOnboardingComplete = async (profile: UserProfile) => { if (auth.currentUser) { await saveProfile(auth.currentUser.uid, profile); setUserProfile(profile); setOnboardingStep(5); } };
-  const handlePlanSelect = async (plan: SubscriptionPlan) => { if (auth.currentUser && userProfile) { const updated = { ...userProfile, plan }; await updateProfile(auth.currentUser.uid, { plan }); setUserProfile(updated); } };
-  const handleDeleteIdea = async (id: string) => { if (auth.currentUser) { await deleteIdea(auth.currentUser.uid, id); setIdeas(prev => prev.filter(i => i.id !== id)); } };
-  const handleSaveIdea = async (idea: Omit<VideoIdea, 'id'>) => { if (auth.currentUser) { const id = await addIdea(auth.currentUser.uid, idea); setIdeas(prev => [{...idea, id}, ...prev]); } };
+  const handleLogout = async () => { await logoutUser(); };
+  const handleOnboardingComplete = async (profile: UserProfile) => { if (auth.currentUser) { await saveProfile(auth.currentUser.uid, profile); setOnboardingStep(5); } };
+  const handlePlanSelect = async (plan: SubscriptionPlan) => { if (auth.currentUser && userProfile) { await updateProfile(auth.currentUser.uid, { plan }); } };
+  const handleDeleteIdea = async (id: string) => { if (auth.currentUser) { await deleteIdea(auth.currentUser.uid, id); } };
+  const handleSaveIdea = async (idea: Omit<VideoIdea, 'id'>) => { 
+    if (auth.currentUser) { 
+      return await addIdea(auth.currentUser.uid, idea); 
+    } 
+  };
+  const handleUpdateIdea = async (id: string, updates: Partial<VideoIdea>) => {
+    if (auth.currentUser) {
+      await updateIdea(auth.currentUser.uid, id, updates);
+    }
+  };
 
-  if (view === 'loading') return <div className="min-h-screen bg-[#0A0A0B] flex items-center justify-center"><Loader2 className="animate-spin text-purple-600" size={48} /></div>;
+  if (!isAuthReady || view === 'loading') return <div className="min-h-screen bg-[#0A0A0B] flex items-center justify-center"><Loader2 className="animate-spin text-purple-600" size={48} /></div>;
   if (view === 'landing') return <LandingPage onStart={() => { setAuthMode('signup'); setView('auth'); }} onLogin={() => { setAuthMode('login'); setView('auth'); }} />;
-  if (view === 'auth') return <AuthView mode={authMode} onSwitch={setAuthMode} onSuccess={() => { /* State listener handles redirection */ }} />;
-  if (view === 'app' && onboardingStep < 5 && userProfile && (!userProfile.platforms || userProfile.platforms.length === 0)) return <Onboarding step={onboardingStep} initialProfile={userProfile} onNext={() => setOnboardingStep(prev => prev + 1)} onComplete={handleOnboardingComplete} />;
-
-  return (
+  if (view === 'auth') return <AuthView mode={authMode} onSwitch={setAuthMode} onSuccess={() => { /* Handled by state listener */ }} />;
+  
+  const content = (
     <div className="flex h-screen bg-[#0A0A0B] text-white overflow-hidden">
       <aside className="w-64 border-r border-[#26262B] flex flex-col p-4 sticky top-0 h-screen bg-[#0A0A0B]">
         <div className="flex items-center gap-2 px-4 py-6 mb-4"><div className="bg-purple-600 p-1.5 rounded-lg shadow-lg shadow-purple-600/20"><Zap size={24} className="text-white fill-white" /></div><h1 className="text-xl font-extrabold tracking-tight">VIRAL<span className="text-purple-500">FLOW</span></h1></div>
@@ -1070,14 +1726,14 @@ export default function App() {
           {currentSubView === 'dashboard' && <TrendTicker niche={userProfile?.niche[0] || 'AI'} />}
           <div className="flex items-center justify-between px-8 py-4">
             <div className="flex items-center gap-4"><div><h2 className="text-lg font-bold capitalize">{currentSubView.replace('-', ' ')}</h2><p className="text-xs text-zinc-500">Welcome back, {userProfile?.name || 'Creator'}</p></div>{userProfile?.plan && userProfile.plan !== 'Starter' && <Badge color="purple">{userProfile.plan}</Badge>}</div>
-            <div className="flex items-center gap-4"><Badge color="zinc">Credits Unlimited</Badge>{(!userProfile?.plan || userProfile.plan === 'Starter') && (<button onClick={() => setCurrentSubView('pricing')} className="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl text-sm font-bold shadow-lg shadow-purple-900/20">Upgrade</button>)}</div>
+            <div className="flex items-center justify-between gap-4"><Badge color="zinc">Credits Unlimited</Badge>{(!userProfile?.plan || userProfile.plan === 'Starter') && (<button onClick={() => setCurrentSubView('pricing')} className="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-xl text-sm font-bold shadow-lg shadow-purple-900/20">Upgrade</button>)}</div>
           </div>
         </header>
         <div className="p-8 max-w-7xl mx-auto">
-          {userProfile && currentSubView === 'dashboard' && <DashboardView userProfile={userProfile} ideas={ideas} onDeleteIdea={handleDeleteIdea} onAction={setCurrentSubView} />}
-          {currentSubView === 'calendar' && <CalendarFlowView ideas={ideas} onAction={setCurrentSubView} />}
-          {currentSubView === 'hooks' && <HookGeneratorView userProfile={userProfile} onSaveIdea={handleSaveIdea} />}
-          {currentSubView === 'scripts' && <ScriptBuilderView onSaveIdea={handleSaveIdea} />}
+          {userProfile && currentSubView === 'dashboard' && <DashboardView userProfile={userProfile} ideas={ideas} onDeleteIdea={handleDeleteIdea} onAction={setCurrentSubView} onSelectIdeaForScript={setEditingIdea} />}
+          {currentSubView === 'calendar' && <CalendarFlowView ideas={ideas} onAction={setCurrentSubView} onUpdateIdea={handleUpdateIdea} onSelectIdeaForScript={setEditingIdea} onSaveIdea={handleSaveIdea} onDeleteIdea={handleDeleteIdea} />}
+          {currentSubView === 'hooks' && <HookGeneratorView userProfile={userProfile} onSaveIdea={handleSaveIdea} onSelectIdeaForScript={setEditingIdea} onAction={setCurrentSubView} />}
+          {currentSubView === 'scripts' && <ScriptBuilderView activeIdea={editingIdea} setActiveIdea={setEditingIdea} onSaveIdea={handleSaveIdea} onUpdateIdea={handleUpdateIdea} />}
           {currentSubView === 'audit' && <AuditView />}
           {currentSubView === 'generator' && <VideoGeneratorView />}
           {currentSubView === 'coach' && <CoachView />}
@@ -1087,4 +1743,12 @@ export default function App() {
       </main>
     </div>
   );
+
+  if (view === 'app' && onboardingStep < 5 && userProfile && (!userProfile.platforms || userProfile.platforms.length === 0)) {
+    return (
+      <Onboarding step={onboardingStep} initialProfile={userProfile} onNext={() => setOnboardingStep(prev => prev+1)} onComplete={handleOnboardingComplete} />
+    );
+  }
+
+  return content;
 }
